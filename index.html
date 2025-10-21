@@ -1,0 +1,1462 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Leaflet Web Map — WMS + Vector</title>
+
+  <!-- ✅ Load Leaflet without integrity attributes -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Leaflet.draw CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+
+  <style>
+    html, body, #map { height: 100%; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    .legend {
+      background: white;
+      padding: 6px 8px;
+      box-shadow: 0 0 12px rgba(0,0,0,0.15);
+      line-height: 1.4;
+      font-size: 14px;
+    }
+    .info {
+      background: white;
+      padding: 6px 8px;
+      box-shadow: 0 0 12px rgba(0,0,0,0.15);
+      font-size: 14px;
+    }
+
+    /* nicer popup / info-card for regions */
+    .region-popup {
+      min-width: 220px;
+      font-size: 13px;
+      color: #222;
+    }
+    .region-popup .title {
+      font-weight: 700;
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+    .region-popup table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 6px;
+    }
+    .region-popup td {
+      padding: 3px 6px;
+      vertical-align: top;
+    }
+    .region-popup .k {
+      color: #555;
+      width: 38%;
+      font-weight: 600;
+    }
+    .region-popup .actions {
+      margin-top: 8px;
+      display:flex;
+      gap:8px;
+    }
+    .region-popup .btn {
+      padding:6px 8px;
+      border-radius:4px;
+      border:1px solid rgba(0,0,0,0.08);
+      background: #fff;
+      cursor:pointer;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.03);
+      font-size:13px;
+    }
+    .region-popup .btn.primary {
+      background: #2E86AB;
+      color: white;
+      border-color: rgba(0,0,0,0.12);
+    }
+  /* small previews are shown on hover only; permanent mini-cards removed */
+    /* Compact translucent rounded search input (idle) -> expands to full search on focus */
+    #topControls .search-input {
+      width: 44px; /* compact pill when idle */
+      padding: 6px;
+      border-radius: 999px; /* pill */
+      background: rgba(255,255,255,0.5); /* 50% transparency */
+      border: 1px solid rgba(0,0,0,0.06);
+      transition: width 220ms ease, border-radius 180ms ease, background 180ms ease, box-shadow 180ms ease;
+      box-shadow: none;
+      cursor: text;
+      color: #222;
+    }
+    #topControls .search-input::placeholder { color: rgba(0,0,0,0.6); opacity: 0; transition: opacity 180ms ease; }
+    #topControls .search-input:focus {
+      width: 200px; /* expand to the previous full width */
+      border-radius: 4px;
+      background: #fff;
+      border-color: #ddd;
+      outline: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    }
+    #topControls .search-input:focus::placeholder { opacity: 1; color: #666; }
+    /* Search results dropdown shown under the search input when focused */
+    #topControls .search-results {
+      position: absolute;
+      left: 0;
+      top: calc(100% + 8px);
+      min-width: 220px;
+      background: #fff;
+      border-radius: 6px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+      max-height: 240px;
+      overflow: auto;
+      z-index: 10002;
+      display: none; /* revealed via :focus-within */
+    }
+    #topControls:focus-within .search-results { display: block !important; }
+    #topControls .search-result { padding:8px 10px; cursor:pointer; border-bottom:1px solid #f0f0f0; font-size:13px }
+    #topControls .search-result:focus, #topControls .search-result:hover { background:#f4f8ff; outline:none }
+  </style>
+</head>
+
+<body>
+  <div id="map"></div>
+  <!-- Loading spinner shown while GeoJSON files are fetched -->
+  <div id="loadingSpinner" style="display:none;position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10000">
+    <div style="background:rgba(255,255,255,0.95);padding:12px 18px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.2);display:flex;align-items:center;gap:12px">
+      <div class="spinner" style="width:28px;height:28px;border-radius:50%;border:4px solid #ddd;border-top-color:#2E86AB;animation:spin 1s linear infinite"></div>
+      <div style="font-size:14px;color:#222">Loading data…</div>
+    </div>
+  </div>
+
+  <style>
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Sidebar (feature list) */
+    #featureSidebar { position: fixed; right: 12px; top: 72px; width: 300px; max-height: 64vh; overflow:auto; z-index: 9999; background: white; box-shadow: 0 2px 12px rgba(0,0,0,0.12); border-radius:6px; padding:8px; display:none }
+    #featureSidebar .hdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px }
+    #featureSidebar ul { list-style:none; margin:0; padding:0; }
+    #featureSidebar li { padding:6px 8px; border-bottom:1px solid #f0f0f0; cursor:pointer }
+    #featureSidebar li:hover { background:#f7fbff }
+  /* Top controls: show only search pill by default; reveal full controls on focus */
+  #topControls { position: fixed; left: 50px; top: 12px; z-index: 9999; background: transparent; padding:6px; border-radius:999px; transition: background 180ms ease, box-shadow 180ms ease, padding 180ms ease; }
+  /* Hide all children by default so only the search pill is visible */
+  #topControls > * { display: none; }
+  /* Ensure the search input itself remains visible as the compact pill */
+  #topControls > #searchInput { display: inline-block; vertical-align: middle; }
+  /* When any child (search) has focus, expand container and show all controls */
+  #topControls:focus-within { background: white; padding:8px; box-shadow:0 2px 12px rgba(0,0,0,0.12); border-radius:6px }
+  #topControls:focus-within > * { display: inline-block; vertical-align: middle; }
+  /* small gaps between inline controls */
+  #topControls input, #topControls select { margin-right:6px }
+  #exportBtn { margin-left:6px }
+  </style>
+
+  <!-- ✅ Load Leaflet without integrity attributes -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Leaflet.draw JS -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+
+  <script>
+    // Small helper: spinner show/hide
+    function showSpinner() { try { document.getElementById('loadingSpinner').style.display = 'block'; } catch(e){} }
+    function hideSpinner() { try { document.getElementById('loadingSpinner').style.display = 'none'; } catch(e){} }
+
+    // TOP controls (search, property selector, export, sidebar toggle)
+    (function createTopControls(){
+      const c = document.createElement('div'); c.id = 'topControls';
+      c.innerHTML = `
+  <div style="position:relative;display:inline-block">
+    <input id="searchInput" class="search-input" placeholder="Search features..." />
+    <div id="searchResults" class="search-results" role="listbox" aria-label="Search results"></div>
+  </div>
+        <button id="exportBtn">Export drawings</button>
+        <button id="importBtn">Import</button>
+      `;
+      document.body.appendChild(c);
+
+      // search input stays; add Enter/Escape handlers to perform/clear search
+      document.getElementById('searchInput').addEventListener('keydown', function(e){
+        if (e.key === 'Enter') {
+          performSearch();
+        } else if (e.key === 'Escape') {
+          clearSearch();
+          try { this.blur(); } catch (err){}
+        }
+      });
+      // clear results when the input becomes empty
+      document.getElementById('searchInput').addEventListener('input', function(e){
+        try {
+          const v = (e.target.value || '').trim();
+          if (!v) {
+            clearSearch();
+            const res = document.getElementById('searchResults'); if (res) res.innerHTML = '';
+          }
+        } catch (err) {}
+      });
+  document.getElementById('exportBtn').addEventListener('click', function(){ exportDrawnGeoJSON(); });
+  document.getElementById('importBtn').addEventListener('click', function(){ importGeoJSONPicker(); });
+    })();
+
+    // Sidebar container
+    const sidebar = document.createElement('div'); sidebar.id = 'featureSidebar';
+    sidebar.innerHTML = `<div class="hdr"><strong>Features</strong><button onclick="document.getElementById('featureSidebar').style.display='none'">Close</button></div><ul id="featureList"></ul>`;
+    document.body.appendChild(sidebar);
+
+    // =========================
+    // CONFIGURATION
+    // =========================
+    const WMS1 = {
+      url: 'https://ows.terrestris.de/osm/service?',
+      layerName: 'OSM-WMS',
+      title: 'OSM WMS (alt background)'
+    };
+
+    // (Removed WMS2 / Latvia regions configuration)
+
+    // =========================
+    // INITIALIZE MAP (Valmiera, Latvia)
+    // =========================
+    const map = L.map('map', {
+      center: [57.5368, 25.4240],
+      zoom: 13
+    });
+
+    // create dedicated panes for label layers so they can sit above satellite tiles
+    try {
+      map.createPane('labelsPane');
+      // raise z-index high so label tiles sit above vector borders and other overlays
+      map.getPane('labelsPane').style.zIndex = 1400;
+      map.createPane('labelsPaneTop');
+      map.getPane('labelsPaneTop').style.zIndex = 1401;
+      // allow pointer events so labels don't block interactions unnecessarily
+      map.getPane('labelsPane').style.pointerEvents = 'none';
+      map.getPane('labelsPaneTop').style.pointerEvents = 'none';
+    } catch (e) { /* ignore if panes already exist */ }
+
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Satellite basemap (Esri World Imagery)
+    const esriSat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+    });
+
+    // Esri reference layers for labels (places and transportation)
+    // place labels should sit above road tiles so text isn't occluded
+    const esriPlaces = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+      pane: 'labelsPaneTop',
+      maxZoom: 19,
+      attribution: 'Labels &copy; Esri'
+    });
+
+    const esriTransport = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', {
+      pane: 'labelsPane',
+      maxZoom: 19,
+      attribution: 'Labels &copy; Esri'
+    });
+
+    // =========================
+    // WMS LAYERS
+    // =========================
+    const wmsLayer1 = L.tileLayer.wms(WMS1.url, {
+      layers: WMS1.layerName,
+      format: 'image/png',
+      transparent: true,
+      attribution: WMS1.title
+    });
+
+    // Removed: wmsLayer2 (Latvia regions), wmsLayer2Wms (borders) and osmbLayer (OSMB GeoJSON)
+
+  // Administrative boundary layers (ADM0, ADM1, ADM2) loaded from workspace files
+  const adm0Layer = L.layerGroup();
+  const adm1Layer = L.layerGroup();
+  const adm2Layer = L.layerGroup();
+  // keep references to the underlying L.geoJSON objects so search can run even
+  // when the layer groups are not added to the map
+  const admGeo = [];
+  // temporary single-feature layer shown when a search result is chosen
+  let singleFeatureLayer = null;
+
+    // helper: possible property keys that could hold region name in lv.json
+  // include 'shapeName' so country-level features can display a nicer title
+  const nameKeys = ['shapeName','name','NAME','NAME_1','NAME_EN','region','REGION','adm1_name','NAME_LATV'];
+    const wantedRegions = new Set(['Kurzeme','Zemgale','Latgale','Vidzeme','Sēlija','Selija','Seliya']);
+
+    // Removed: automatic loading of lv.json (Latvia regions GeoJSON)
+
+    // =========================
+    // VECTOR DATA (sample)
+    // =========================
+    // No sample features — start with an empty FeatureCollection
+    const geojsonData = {
+      "type": "FeatureCollection",
+      "features": []
+    };
+
+    function styleFeature(feature) {
+      switch ((feature.properties && feature.properties.type) || '') {
+        case 'Latvia region': return { color: '#2E86AB', weight: 2, fillOpacity: 0.35 };
+        case 'Example polygon': return { color: '#ff7800', weight: 3, fillOpacity: 0.45 };
+        case 'Custom polygon': return { color: '#ff7800', weight: 3, fillOpacity: 0.55 };
+        case 'Custom point': return { color: '#3388ff', weight: 2 };
+        default: return { color: '#3388ff', weight: 2 };
+      }
+    }
+
+    // deterministic color by string (hash -> HSL)
+    function colorForString(s) {
+      if (!s) s = Math.random().toString(36).slice(2,8);
+      // simple hash
+      let h = 0;
+      for (let i = 0; i < s.length; i++) h = ((h << 5) - h) + s.charCodeAt(i);
+      h = Math.abs(h);
+      const hue = h % 360;
+      const sat = 55 + (h % 20); // 55-75
+      const light = 45 + (h % 10); // 45-55
+      return `hsl(${hue} ${sat}% ${light}%)`;
+    }
+
+    // helper: darken a hex color by a fraction (0..1)
+    function darkenColor(hex, amount) {
+      if (!hex) return hex;
+      hex = hex.replace('#', '');
+      if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+      const num = parseInt(hex, 16);
+      let r = (num >> 16) & 0xff;
+      let g = (num >> 8) & 0xff;
+      let b = num & 0xff;
+      r = Math.max(0, Math.floor(r * (1 - amount)));
+      g = Math.max(0, Math.floor(g * (1 - amount)));
+      b = Math.max(0, Math.floor(b * (1 - amount)));
+      return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+    }
+
+    // Selected layers (allow multiple selections)
+    const selectedLayers = new Set();
+
+    // Helper: select/deselect layers (keeps selection state in selectedLayers)
+    function selectLayer(layer) {
+      if (!layer) return;
+      selectedLayers.add(layer);
+      applySelectedStyle(layer);
+      try { layer.bringToFront && layer.bringToFront(); } catch (err) {}
+    }
+
+    function deselectLayer(layer) {
+      if (!layer) return;
+      selectedLayers.delete(layer);
+      try {
+        if (layer._originalStyle) {
+          layer.setStyle({
+            color: layer._originalStyle.color,
+            weight: layer._originalStyle.weight,
+            fillOpacity: layer._originalStyle.fillOpacity,
+            dashArray: layer._originalStyle.dashArray
+          });
+        } else {
+          applyDefaultStyle(layer);
+        }
+        try { layer.closeTooltip && layer.closeTooltip(); } catch (err) {}
+      } catch (err) { /* noop */ }
+    }
+
+    function toggleLayerSelection(layer) {
+      if (!layer) return;
+      if (selectedLayers.has(layer)) deselectLayer(layer);
+      else selectLayer(layer);
+      updateLegend();
+    }
+
+    function clearAllSelections() {
+      try {
+        for (const ly of Array.from(selectedLayers)) {
+          try {
+            if (ly._originalStyle) {
+              ly.setStyle({
+                color: ly._originalStyle.color,
+                weight: ly._originalStyle.weight,
+                fillOpacity: ly._originalStyle.fillOpacity,
+                dashArray: ly._originalStyle.dashArray
+              });
+            } else {
+              applyDefaultStyle(ly);
+            }
+            try { ly.closeTooltip && ly.closeTooltip(); } catch (err) {}
+          } catch (err) {}
+        }
+      } finally {
+        selectedLayers.clear();
+        updateLegend();
+      }
+    }
+
+    // Click handler helper: if Ctrl is held, toggle selection (multi-select),
+    // otherwise do a single-select (clear others and select this one).
+    // Also: if more than one layer is selected, close large popups so only
+    // the small preview (tooltip) remains active.
+    function handleLayerClick(layer, originalEvent) {
+      const ctrl = originalEvent && originalEvent.ctrlKey;
+      if (ctrl) {
+        // toggle without affecting other selections
+        if (selectedLayers.has(layer)) deselectLayer(layer);
+        else selectLayer(layer);
+      } else {
+        // single-select: clear others then select this one
+        // if this layer was already the only selected one, toggle it off
+        if (selectedLayers.size === 1 && selectedLayers.has(layer)) {
+          deselectLayer(layer);
+        } else {
+          clearAllSelections();
+          selectLayer(layer);
+        }
+      }
+
+      // popup behavior: show popup only when exactly one feature is selected.
+      if (selectedLayers.size === 1) {
+        // open popup for the sole selected layer
+        try { layer.openPopup && layer.openPopup(); } catch (err) {}
+      } else {
+        // multiple selected -> switch to small preview (tooltip); close popups
+        try { map.closePopup(); } catch (err) {}
+        // open small tooltip for each selected layer (tooltips are non-sticky and will appear hover-only,
+        // but we ensure any previously opened popups are closed)
+        try {
+          selectedLayers.forEach(function (ly) {
+            try { /* no programmatic open; show on hover only */ } catch (err) {}
+          });
+        } catch (err) {}
+      }
+
+      updateLegend();
+    }
+
+    // Apply a "selected" style based on base style
+    function applySelectedStyle(layer) {
+      const props = (layer.feature && layer.feature.properties) || {};
+      const base = styleFeature({ properties: props }) || {};
+      const sel = Object.assign({}, base, {
+        weight: Math.max(4, (base.weight || 2) + 2),
+        fillOpacity: Math.min(1, (base.fillOpacity || 0.3) + 0.3)
+      });
+      try { layer.setStyle && layer.setStyle(sel); } catch (err) { /* noop for markers */ }
+      try { layer.bringToFront && layer.bringToFront(); } catch (err) {}
+    }
+
+    function applyDefaultStyle(layer) {
+      const props = (layer.feature && layer.feature.properties) || {};
+      const def = styleFeature({ properties: props }) || {};
+      try {
+        // If we previously cached an original style, restore that exact style.
+        if (layer._originalStyle) {
+          layer.setStyle({
+            color: layer._originalStyle.color,
+            weight: layer._originalStyle.weight,
+            fillOpacity: layer._originalStyle.fillOpacity,
+            dashArray: layer._originalStyle.dashArray
+          });
+          return;
+        }
+        // otherwise apply the default derived style
+        layer.setStyle && layer.setStyle(def);
+      } catch (err) { /* noop */ }
+      // ensure original style cache exists if it wasn't present
+      if (!layer._originalStyle) {
+        layer._originalStyle = {
+          color: def.color,
+          weight: def.weight,
+          fillOpacity: def.fillOpacity,
+          dashArray: def.dashArray
+        };
+      }
+    }
+
+    function highlightFeature(e) {
+      const layer = e.target;
+  // don't override selected style
+  if (selectedLayers.has(layer)) return;
+
+      // cache original style once
+      if (!layer._originalStyle) {
+        layer._originalStyle = {
+          color: layer.options && layer.options.color,
+          weight: layer.options && layer.options.weight,
+          fillOpacity: layer.options && layer.options.fillOpacity,
+          dashArray: layer.options && layer.options.dashArray
+        };
+      }
+      const orig = layer._originalStyle;
+      const baseColor = orig.color || (layer.options && layer.options.color) || '#3388ff';
+      const darkColor = darkenColor(baseColor, 0.18); // darken by ~18%
+
+      try {
+        layer.setStyle({
+          color: darkColor,
+          weight: (orig.weight || (layer.options && layer.options.weight) || 2) + 2,
+          fillOpacity: Math.min(1, (orig.fillOpacity || (layer.options && layer.options.fillOpacity) || 0.35) + 0.15),
+          dashArray: orig.dashArray
+        });
+        if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) layer.bringToFront();
+      } catch (err) { /* noop */ }
+    }
+
+    function resetHighlight(e) {
+      const layer = e && e.target;
+      if (!layer) return;
+      // if it's currently selected, re-apply selected style
+      if (selectedLayers.has(layer)) {
+        applySelectedStyle(layer);
+        return;
+      }
+      // restore cached original style if available
+      if (layer._originalStyle) {
+        try {
+          layer.setStyle({
+            color: layer._originalStyle.color,
+            weight: layer._originalStyle.weight,
+            fillOpacity: layer._originalStyle.fillOpacity,
+            dashArray: layer._originalStyle.dashArray
+          });
+        } catch (err) { /* noop */ }
+        return;
+      }
+      // otherwise fallback
+      if (layer.feature) {
+        applyDefaultStyle(layer);
+      } else {
+        try { layer.setStyle({ weight: 2 }); } catch (err) { /* noop */ }
+      }
+    }
+
+    // Compute polygon area (km^2) for GeoJSON Polygon / MultiPolygon using a
+    // spherical surface approximation. This follows the common spherical
+    // polygon area formula: area = R^2 / 2 * sum( (lon2-lon1) * (sin(lat1)+sin(lat2)) )
+    // which works for polygons that don't wrap the pole. For complex needs,
+    // consider integrating turf.js or GeographicLib.
+    function polygonAreaKm2(geom) {
+      if (!geom || !geom.type) return 0;
+      const R = 6371; // earth radius in km
+      function ringArea(ring) {
+        // ring is array of [lon, lat]
+        let area = 0;
+        for (let i = 0, len = ring.length; i < len - 1; i++) {
+          const lon1 = ring[i][0], lat1 = ring[i][1];
+          const lon2 = ring[i+1][0], lat2 = ring[i+1][1];
+          const lon1r = lon1 * Math.PI / 180;
+          const lon2r = lon2 * Math.PI / 180;
+          const lat1r = lat1 * Math.PI / 180;
+          const lat2r = lat2 * Math.PI / 180;
+          area += (lon2r - lon1r) * (Math.sin(lat1r) + Math.sin(lat2r));
+        }
+        return area;
+      }
+
+      let total = 0;
+      try {
+        if (geom.type === 'Polygon') {
+          for (const ring of geom.coordinates) total += ringArea(ring);
+        } else if (geom.type === 'MultiPolygon') {
+          for (const poly of geom.coordinates) for (const ring of poly) total += ringArea(ring);
+        } else {
+          return 0;
+        }
+      } catch (err) { return 0; }
+
+      return Math.abs(total * (R * R) / 2.0);
+    }
+
+    // Compute a geographic centroid (lat, lon) for a GeoJSON geometry.
+    // We compute the centroid by averaging the Cartesian coordinates on the
+    // unit sphere and converting back to lat/lon. This places the point roughly
+    // in the geometric middle of the polygon (good for display/popup centering).
+    function centroidLatLon(geom) {
+      if (!geom || !geom.type) return null;
+      const pts = [];
+      try {
+        if (geom.type === 'Point') return [geom.coordinates[1], geom.coordinates[0]];
+        if (geom.type === 'Polygon') {
+          const ring = geom.coordinates[0] || [];
+          for (const c of ring) pts.push([c[1], c[0]]); // [lat, lon]
+        } else if (geom.type === 'MultiPolygon') {
+          const ring = (geom.coordinates[0] && geom.coordinates[0][0]) || [];
+          for (const c of ring) pts.push([c[1], c[0]]);
+        } else if (geom.type === 'LineString') {
+          for (const c of geom.coordinates) pts.push([c[1], c[0]]);
+        } else if (geom.type === 'MultiLineString') {
+          for (const seg of geom.coordinates) for (const c of seg) pts.push([c[1], c[0]]);
+        }
+      } catch (err) { return null; }
+
+      if (!pts.length) return null;
+      let x = 0, y = 0, z = 0;
+      for (const p of pts) {
+        const lat = p[0] * Math.PI / 180;
+        const lon = p[1] * Math.PI / 180;
+        x += Math.cos(lat) * Math.cos(lon);
+        y += Math.cos(lat) * Math.sin(lon);
+        z += Math.sin(lat);
+      }
+      const tot = pts.length;
+      x /= tot; y /= tot; z /= tot;
+      const hyp = Math.sqrt(x * x + y * y);
+      const lat = Math.atan2(z, hyp) * 180 / Math.PI;
+      const lon = Math.atan2(y, x) * 180 / Math.PI;
+      return [lat, lon];
+    }
+
+    function buildPopupContent(feature) {
+      // Build info card showing: Name; area (km²); N coords; E coords
+      const f = feature || {};
+      const p = f.properties || {};
+
+      // helper: collect all (lat,lng) pairs from GeoJSON coords
+      function collectCoords(geom, out) {
+        out = out || [];
+        if (!geom) return out;
+        const t = geom.type;
+        const c = geom.coordinates;
+        if (t === 'Point') {
+          out.push([c[1], c[0]]);
+        } else if (t === 'MultiPoint' || t === 'LineString') {
+          for (const pt of c) out.push([pt[1], pt[0]]);
+        } else if (t === 'MultiLineString' || t === 'Polygon') {
+          for (const ring of c) for (const pt of ring) out.push([pt[1], pt[0]]);
+        } else if (t === 'MultiPolygon') {
+          for (const poly of c) for (const ring of poly) for (const pt of ring) out.push([pt[1], pt[0]]);
+        } else if (geom.coordinates) {
+          // fallback traversal
+          try { JSON.stringify(geom.coordinates); } catch (e) {}
+        }
+        return out;
+      }
+
+      function haversineKm(lat1, lon1, lat2, lon2) {
+        const R = 6371; // km
+        const toRad = Math.PI / 180;
+        const dLat = (lat2 - lat1) * toRad;
+        const dLon = (lon2 - lon1) * toRad;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1*toRad) * Math.cos(lat2*toRad) * Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+      }
+
+      // compute a more accurate spherical area (km^2) and centroid for display
+      let areaKm2 = 0;
+      let centroid = null;
+      try {
+        if (f && f.geometry) {
+          areaKm2 = polygonAreaKm2(f.geometry) || 0;
+          centroid = centroidLatLon(f.geometry);
+        }
+      } catch (err) { areaKm2 = 0; centroid = null; }
+      const centroidLat = centroid ? centroid[0] : null;
+      const centroidLon = centroid ? centroid[1] : null;
+
+      const title = p.shapeName || p.name || p.NAME || p.NAME_EN || p.NUTS_NAME || p.NAME_LATV || p.id || 'Feature';
+      const areaText = areaKm2 ? areaKm2.toFixed(2) + ' km²' : '—';
+      const nText = (centroidLat !== null) ? centroidLat.toFixed(5) : '—';
+      const eText = (centroidLon !== null) ? centroidLon.toFixed(5) : '—';
+
+      let html = `<div class="region-popup"><div class="title">${title}</div>`;
+      html += '<table>' +
+             `<tr><td class="k">Name</td><td>${title}</td></tr>` +
+             `<tr><td class="k">Area</td><td>${areaText}</td></tr>` +
+             `<tr><td class="k">Lat</td><td>${nText}</td></tr>` +
+             `<tr><td class="k">Lon</td><td>${eText}</td></tr>` +
+             '</table>';
+
+      // actions: zoom and select (buttons call helper functions by layer id)
+      html += `<div class="actions">
+        <button class="btn" onclick="window.regionZoom(_LAYER_ID_)">Zoom</button>
+        <button class="btn primary" onclick="window.regionSelect(_LAYER_ID_)">Select</button>
+      </div>`;
+
+      html += '</div>';
+      return html;
+    }
+
+    function onEachFeature(feature, layer) {
+      // bind popup: buildPopupContent will be post-processed to inject layer id
+  let popupContent = buildPopupContent(feature || {});
+      // inject the leaflet internal id so popup buttons can reference the layer
+      const lid = layer._leaflet_id || L.stamp(layer);
+      popupContent = popupContent.replace(/_LAYER_ID_/g, lid);
+      layer.bindPopup(popupContent);
+
+      // cache the original style for GeoJSON features so hover can revert precisely
+      if (!layer._originalStyle) {
+        layer._originalStyle = {
+          color: layer.options && layer.options.color,
+          weight: layer.options && layer.options.weight,
+          fillOpacity: layer.options && layer.options.fillOpacity,
+          dashArray: layer.options && layer.options.dashArray
+        };
+      }
+
+      // determine a human-friendly display name for the feature
+      function getDisplayName(feat) {
+        const p = feat.properties || {};
+        // Prefer explicit shapeName (used for country-level ADM0 feature)
+        if (p.shapeName) return p.shapeName;
+        const keys = Array.isArray(nameKeys) ? nameKeys : ['name'];
+        for (const k of keys) {
+          if (p[k]) return p[k];
+        }
+        if (p.NAME_LV) return p.NAME_LV;
+        if (p.NUTS_NAME) return p.NUTS_NAME;
+        if (p.name) return p.name;
+        return p.id || 'Region';
+      }
+
+      // bind a small preview tooltip that shows the region name (and color swatch)
+      try {
+        const displayName = getDisplayName(feature);
+        const swatchColor = (styleFeature(feature) && styleFeature(feature).color) || '#2E86AB';
+        const tooltipHtml = `<div style="font-size:13px;display:flex;align-items:center">
+            <span style="width:12px;height:12px;background:${swatchColor};display:inline-block;margin-right:8px;border:1px solid #444"></span>
+            <div><strong>${displayName}</strong></div>
+          </div>`;
+        layer.bindTooltip(tooltipHtml, { direction: 'top', sticky: false, className: 'region-preview' });
+      } catch (err) {
+        /* noop if tooltip binding fails */
+      }
+
+      layer.on({
+        mouseover: function (e) {
+          try { e.target.openTooltip(); } catch (err) {}
+          highlightFeature(e);
+        },
+        mouseout: function (e) {
+          try { e.target.closeTooltip(); } catch (err) {}
+          resetHighlight(e);
+        },
+        click: function (e) {
+          // open nicer popup and handle selection with Ctrl for multi-select
+          const clicked = e.target;
+          try { /* do not auto-open popup here; handled in helper */ } catch (err) {}
+          // pass originalEvent so helper can detect ctrlKey
+          handleLayerClick(clicked, e.originalEvent || e);
+          // zoom to region
+          if (clicked.getBounds) map.fitBounds(clicked.getBounds());
+        }
+      });
+    }
+
+    // Removed: sample Vector data layer (geojsonLayer)
+
+    // Removed: OSMB GeoJSON loader
+
+    // Keep map centered on Valmiera (Latvia). Disable automatic fit to GeoJSON.
+    // if (geojsonLayer.getBounds && geojsonLayer.getBounds().isValid()) {
+    //   map.fitBounds(geojsonLayer.getBounds(), { padding: [20, 20] });
+    // }
+
+    // =========================
+    // LOAD ADMIN BOUNDARIES (ADM0/ADM1/ADM2)
+    // =========================
+    function loadAdmFile(filename, targetLayer, fitToMap) {
+      showSpinner();
+      fetch(filename)
+        .then(res => { if (!res.ok) throw new Error(filename + ' not available'); return res.json(); })
+        .then(data => {
+          if (!data || !Array.isArray(data.features)) return;
+          data.features.forEach(f => { f.properties = f.properties || {}; });
+          // style each feature uniquely based on a name/id property
+          const geo = L.geoJSON(data, { 
+            style: function(feat){
+              const p = feat.properties || {};
+              // pick a name-like property
+              let key = null;
+              for (const k of nameKeys) { if (p[k]) { key = p[k]; break; } }
+              const color = colorForString(key || p.id || JSON.stringify(p).slice(0,20));
+              return Object.assign({}, styleFeature(feat) || {}, { color: color, fillOpacity: (styleFeature(feat) && styleFeature(feat).fillOpacity) || 0.35 });
+            }, onEachFeature: onEachFeature });
+          targetLayer.clearLayers(); targetLayer.addLayer(geo);
+          // keep a reference to the raw geoJSON layer for searching even if targetLayer
+          // (the LayerGroup) is not currently added to the map
+          try { admGeo.push(geo); } catch (err) { /* noop */ }
+          // do not auto-add the layer to the map; keep overlays unchecked by default
+          // (user can toggle them via the layers control)
+          try { const b = geo.getBounds(); if (b && b.isValid && b.isValid() && fitToMap) map.fitBounds(b, { padding: [20, 20] }); } catch (err) {}
+          // attempt to fit to preferred ADM1 after each ADM loads (if available)
+          tryFitAdmBounds();
+          populateFeatureList();
+        })
+        .catch(err => { console.warn('ADM geojson not loaded:', filename, err); })
+        .finally(() => { hideSpinner(); });
+    }
+
+    function tryFitAdmBounds() {
+      // prefer ADM1 (regions), then ADM2, then ADM0
+      try {
+        const preferred = [adm1Layer, adm2Layer, adm0Layer];
+        for (const lg of preferred) {
+          let got = null;
+          lg.eachLayer(function (ly) { if (!got && ly.getBounds) got = ly; });
+          if (got && got.getBounds) {
+            const b = got.getBounds(); if (b && b.isValid && b.isValid()) { map.fitBounds(b, { padding: [20,20] }); return; }
+          }
+        }
+      } catch (err) { /* noop */ }
+    }
+
+    // Kick off loading of three ADM files from the workspace root
+    loadAdmFile('Latvia_ADM0_simplified.simplified.geojson', adm0Layer, false);
+    loadAdmFile('Latvia_ADM1_simplified.simplified.geojson', adm1Layer, false);
+    loadAdmFile('Latvia_ADM2_simplified.simplified.geojson', adm2Layer, false);
+
+    // =========================
+    // USER DRAWN FEATURES (Leaflet.draw)
+    // =========================
+    // FeatureGroup to store user drawings
+  const drawnItems = new L.FeatureGroup();
+
+    // Draw control: allow markers and polygons (editable)
+    const drawControl = new L.Control.Draw({
+      edit: {
+        featureGroup: drawnItems,
+        remove: true
+      },
+      draw: {
+          polyline: {
+            shapeOptions: { color: '#3388ff', weight: 3 }
+          },
+          rectangle: {
+            shapeOptions: { color: '#ff7800', weight: 3, fillOpacity: 0.35 }
+          },
+          circle: {
+            shapeOptions: { color: '#ff7800', weight: 3, fillOpacity: 0.35 }
+          },
+          circlemarker: false,
+        marker: {
+          icon: new L.Icon.Default()
+        },
+        polygon: {
+          allowIntersection: false,
+          showArea: true,
+          drawError: { color: '#e1e100', message: '<strong>Error:<strong> shape is invalid' },
+          // make user polygons more visible by default
+          shapeOptions: { color: '#ff7800', weight: 3, fillOpacity: 0.5 }
+        }
+      }
+    });
+    map.addControl(drawControl);
+
+    // Helper: attach properties, popup and events to a layer created by user
+    function attachPropsToLayer(layer, props) {
+      // add properties to layer.feature for GeoJSON compatibility
+      layer.feature = layer.feature || { type: 'Feature', properties: {} };
+      layer.feature.properties = Object.assign({}, layer.feature.properties, props);
+
+      // style points as circle markers if marker was used
+      if (layer instanceof L.Marker && !(layer instanceof L.CircleMarker)) {
+        // replace marker with circleMarker for styling consistency
+        const latlng = layer.getLatLng();
+        map.removeLayer(layer);
+        const cm = L.circleMarker(latlng, { radius: 7, fillOpacity: 0.9, color: styleFeature({ properties: props }).color });
+        cm.feature = layer.feature;
+        cm.addTo(drawnItems);
+        layer = cm;
+      } else if (layer.setStyle) {
+        // apply style to polygon/polylines
+        layer.setStyle(styleFeature({ properties: props }));
+      }
+
+      // cache original style for user-drawn layers
+      if (!layer._originalStyle) {
+        const computed = {
+          color: (layer.options && layer.options.color) || styleFeature({ properties: props }).color,
+          weight: (layer.options && layer.options.weight) || styleFeature({ properties: props }).weight,
+          fillOpacity: (layer.options && layer.options.fillOpacity) || styleFeature({ properties: props }).fillOpacity,
+          dashArray: layer.options && layer.options.dashArray
+        };
+        layer._originalStyle = computed;
+      }
+
+  const popupContent = buildPopupContent(layer.feature || {});
+      layer.bindPopup(popupContent);
+
+      // build a small "legend preview" tooltip content
+      const baseStyle = styleFeature({ properties: layer.feature.properties || {} });
+      const swatchColor = baseStyle.color || '#999';
+      const tooltipHtml = `<div style="font-size:13px">
+        <div style="display:flex;align-items:center">
+          <span style="width:14px;height:14px;background:${swatchColor};display:inline-block;margin-right:8px;border:1px solid #444"></span>
+          <div><strong>${props.name || 'Feature'}</strong><br/><small>${props.type || ''}</small></div>
+        </div>
+        ${props.info ? `<div style="margin-top:6px;color:#333">${props.info}</div>` : ''}
+      </div>`;
+
+      // bind tooltip (preview of legend) but do not open permanently
+      layer.bindTooltip(tooltipHtml, { direction: 'top', sticky: true, className: 'legend-preview' });
+
+      layer.on({
+        mouseover: function (e) {
+          // show preview tooltip
+          try { e.target.openTooltip(); } catch (err) {}
+          highlightFeature(e);
+        },
+        mouseout: function (e) {
+          try { e.target.closeTooltip(); } catch (err) {}
+          resetHighlight(e);
+        },
+        click: function (e) {
+          // prevent map click propagation so map-level click handlers don't deselect immediately
+          if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+
+          const clicked = e.target;
+          // use helper so Ctrl enables multi-select, otherwise single-select
+          handleLayerClick(clicked, e.originalEvent || e);
+
+          // fit to bounds of clicked item
+          if (clicked.getBounds) {
+            map.fitBounds(clicked.getBounds());
+          } else if (e.latlng) {
+            map.setView(e.latlng, map.getZoom());
+          }
+        }
+      });
+
+      // refresh legend to show counts/types
+      updateLegend();
+    }
+
+    // When a new shape is created
+
+    map.on(L.Draw.Event.CREATED, function (event) {
+      const layer = event.layer;
+
+      // Ask user for basic attributes and provide a better default per shape
+      let defaultName = 'Custom polygon';
+      switch (event.layerType) {
+        case 'marker': defaultName = 'Custom point'; break;
+        case 'circlemarker': defaultName = 'Custom point'; break;
+        case 'polyline': defaultName = 'Custom line'; break;
+        case 'rectangle': defaultName = 'Custom rectangle'; break;
+        case 'circle': defaultName = 'Custom circle'; break;
+        default: defaultName = 'Custom polygon';
+      }
+      const name = prompt('Feature name', defaultName) || defaultName;
+      const type = prompt('Feature type (e.g. Custom point, Custom polygon)', defaultName) || defaultName;
+      const info = prompt('Optional info/description', '') || '';
+
+      const props = { name, type, info };
+
+      // Attach properties and add to drawnItems
+      attachPropsToLayer(layer, props);
+      if (!drawnItems.hasLayer(layer)) drawnItems.addLayer(layer);
+      // newly created features should not automatically clear existing selections
+      // but we will update legend to reflect new counts
+      updateLegend();
+      // no autosave — user must click Export to save
+    });
+
+    // Handle edits: rebind popups and update properties if needed
+    map.on(L.Draw.Event.EDITED, function (e) {
+      e.layers.eachLayer(function (layer) {
+        // ensure popup and styles remain consistent after editing
+        if (layer.feature && layer.feature.properties) {
+          attachPropsToLayer(layer, layer.feature.properties);
+          // if this layer was selected, re-apply selected style
+          if (selectedLayers.has(layer)) applySelectedStyle(layer);
+        }
+      });
+      // no autosave — user must click Export to save
+    });
+
+    map.on(L.Draw.Event.DELETED, function (e) {
+      // if selected layer removed, clear selection
+      e.layers.eachLayer(function (layer) {
+        if (selectedLayers.has(layer)) selectedLayers.delete(layer);
+      });
+      updateLegend();
+      // no autosave — user must click Export to save
+    });
+
+    // Clear all selections when clicking on empty map space
+    map.on('click', function (e) {
+      // if click target is a layer handled above, they stop propagation; here it's empty space
+      if (selectedLayers.size === 0) {
+        // still clear any single-feature temporary layer / search results if present
+        try { clearSearch(); } catch (err) {}
+        return;
+      }
+      clearAllSelections();
+      try { clearSearch(); } catch (err) {}
+    });
+    
+    // =========================
+    // LAYERS CONTROL
+    // =========================
+  // include both OSM variants as base layers so we can toggle between them
+  const baseLayers = { "OpenStreetMap": osm, "OpenStreetMap (alt)": wmsLayer1, "Satellite": esriSat };
+    const overlayLayers = {
+      // administrative boundaries (ADM levels)
+      'Latvia ADM0 (country borders)': adm0Layer,
+      'Latvia ADM1 (regions)': adm1Layer,
+      'Latvia ADM2 (sub-regions)': adm2Layer,
+      // User drawings overlay (label layers are auto-managed with satellite)
+      "User drawings": drawnItems
+    };
+
+    // add layers control and keep a reference so we can enable/disable overlays dynamically
+    const layersControl = L.control.layers(baseLayers, overlayLayers, { collapsed: false }).addTo(map);
+
+    // Add a small 1|2 toggle next to the OpenStreetMap base layer to switch between original and alt background
+    function addOsmToggle() {
+      try {
+        const container = layersControl.getContainer();
+        if (!container) return;
+        // find the label node for the primary OpenStreetMap entry
+        const labels = container.querySelectorAll('label');
+        let osmLabel = null; let osmAltLabel = null;
+        labels.forEach(function (lab) {
+          const span = lab.querySelector('span');
+          const txt = span && span.textContent && span.textContent.trim();
+          if (!txt) return;
+          if (txt === 'OpenStreetMap') osmLabel = lab;
+          if (txt === 'OpenStreetMap (alt)') osmAltLabel = lab;
+        });
+        if (!osmLabel) return;
+
+        // hide the alt label in the control (we'll control it via the toggle)
+        if (osmAltLabel) osmAltLabel.style.display = 'none';
+
+        // create toggle element
+        const toggle = document.createElement('span');
+        toggle.style.marginLeft = '8px';
+        toggle.style.fontSize = '12px';
+        toggle.style.color = '#333';
+        toggle.style.userSelect = 'none';
+        toggle.innerHTML = `<a href="#" id="osmToggle1" style="text-decoration:none;padding:2px 4px;border-radius:3px;border:1px solid #ccc;margin-right:4px;background:#eef">1</a><a href="#" id="osmToggle2" style="text-decoration:none;padding:2px 4px;border-radius:3px;border:1px solid #ccc;background:#fff">2</a>`;
+        // append after the label's span
+        const span = osmLabel.querySelector('span');
+        if (span) span.parentNode.appendChild(toggle);
+
+        const inp1 = container.querySelector('input[type="radio"][name] + span + a + a') || null; // attempt no-op
+
+        // helper to find radio input by its layer name
+        function findRadioByName(name) {
+          const inputs = container.querySelectorAll('input[type="radio"]');
+          for (const inp of inputs) {
+            const lab = inp.closest('label');
+            const sp = lab && lab.querySelector('span');
+            if (sp && sp.textContent && sp.textContent.trim() === name) return inp;
+          }
+          return null;
+        }
+
+        const radio1 = findRadioByName('OpenStreetMap');
+        const radio2 = findRadioByName('OpenStreetMap (alt)');
+
+        function setActiveButton(which) {
+          const b1 = document.getElementById('osmToggle1');
+          const b2 = document.getElementById('osmToggle2');
+          if (b1 && b2) {
+            if (which === 1) { b1.style.background = '#eef'; b2.style.background = '#fff'; }
+            else { b1.style.background = '#fff'; b2.style.background = '#eef'; }
+          }
+        }
+
+        // click handlers: trigger the corresponding radio input
+        const btn1 = document.getElementById('osmToggle1');
+        const btn2 = document.getElementById('osmToggle2');
+        if (btn1) btn1.addEventListener('click', function (ev) { ev.preventDefault(); if (radio1) radio1.click(); else { map.addLayer(osm); map.removeLayer(wmsLayer1); } setActiveButton(1); });
+        if (btn2) btn2.addEventListener('click', function (ev) { ev.preventDefault(); if (radio2) radio2.click(); else { map.addLayer(wmsLayer1); map.removeLayer(osm); } setActiveButton(2); });
+
+        // keep toggle in sync with base layer changes
+        map.on('baselayerchange', function (e) {
+          if (e.layer === wmsLayer1) setActiveButton(2);
+          else if (e.layer === osm) setActiveButton(1);
+          else setActiveButton(0);
+        });
+
+        // set initial state
+        setTimeout(function () {
+          if (map.hasLayer(wmsLayer1)) setActiveButton(2); else setActiveButton(1);
+        }, 50);
+      } catch (err) { console.warn('OSM toggle init failed', err); }
+    }
+
+    // try to add the toggle after the control renders
+    setTimeout(addOsmToggle, 200);
+
+    // Helper: automatically add/remove Esri place/road label layers when satellite base is active
+    function updateLabelOverlayAvailability(isSatelliteActive) {
+      try {
+        if (isSatelliteActive) {
+          // ensure label layers are visible when satellite is active
+          try {
+            // place labels above satellite tiles by setting z-index / pane order
+            if (typeof esriPlaces.setZIndex === 'function') esriPlaces.setZIndex(650);
+            if (typeof esriTransport.setZIndex === 'function') esriTransport.setZIndex(651);
+            // add them after setting z-index so they render on top
+            if (!map.hasLayer(esriPlaces)) { map.addLayer(esriPlaces); console.debug('esriPlaces added'); }
+            else { try { esriPlaces.bringToFront && esriPlaces.bringToFront(); console.debug('esriPlaces brought to front (existing)'); } catch (e) {} }
+            if (!map.hasLayer(esriTransport)) { map.addLayer(esriTransport); console.debug('esriTransport added'); }
+            else { try { esriTransport.bringToFront && esriTransport.bringToFront(); console.debug('esriTransport brought to front (existing)'); } catch (e) {} }
+            // ensure place labels are above transport (delayed to let tiles render)
+            setTimeout(function () { try { esriTransport.bringToFront && esriTransport.bringToFront(); esriPlaces.bringToFront && esriPlaces.bringToFront(); console.debug('brought label layers to front after timeout (transport then places)'); } catch (e) {} }, 200);
+          } catch (e) {}
+        } else {
+          // remove label layers when satellite is not active
+          try { map.removeLayer(esriPlaces); console.debug('esriPlaces removed'); } catch (e) {}
+          try { map.removeLayer(esriTransport); console.debug('esriTransport removed'); } catch (e) {}
+        }
+      } catch (err) { /* noop */ }
+    }
+
+    // Update availability when base layer changes
+    map.on('baselayerchange', function (e) {
+      updateLabelOverlayAvailability(e.layer === esriSat);
+    });
+
+  // Initialize overlay availability after page load (cover different timings)
+  window.addEventListener('load', function () { updateLabelOverlayAvailability(map.hasLayer(esriSat)); });
+  // also run shortly after to catch dynamic render timing differences
+  setTimeout(function () { updateLabelOverlayAvailability(map.hasLayer(esriSat)); }, 400);
+    L.control.scale().addTo(map);
+
+    // =========================
+    // LEGEND (dynamic)
+    // =========================
+    const legend = L.control({ position: 'bottomright' });
+
+    function countDrawnByType() {
+      const counts = { 'Custom point': 0, 'Custom polygon': 0 };
+      drawnItems.eachLayer(function (layer) {
+        const t = (layer.feature && layer.feature.properties && layer.feature.properties.type) || '';
+        if (t === 'Custom polygon') counts['Custom polygon']++;
+        else counts['Custom point']++;
+      });
+      return counts;
+    }
+
+    function updateLegend() {
+      const div = legend.getContainer ? legend.getContainer() : null;
+      if (!div) return; // not yet added
+      const counts = countDrawnByType();
+      // show only the user drawings section with live counts
+      div.innerHTML = '<strong>User drawings</strong><br/>' +
+        '<i style="background:#ff7800; width:18px; height:12px; display:inline-block; margin-right:6px"></i> Custom polygons (' + counts['Custom polygon'] + ')<br/>' +
+        '<i style="background:#3388ff; width:12px; height:12px; display:inline-block; border-radius:8px; margin-right:6px"></i> Custom points (' + counts['Custom point'] + ')';
+    }
+
+    legend.onAdd = function () {
+      const div = L.DomUtil.create('div', 'legend');
+      // initial legend content — show user drawings counts (0) until updateLegend runs
+      div.innerHTML = '<strong>User drawings</strong><br/>' +
+        '<i style="background:#ff7800; width:18px; height:12px; display:inline-block; margin-right:6px"></i> Custom polygons (0)<br/>' +
+        '<i style="background:#3388ff; width:12px; height:12px; display:inline-block; border-radius:8px; margin-right:6px"></i> Custom points (0)';
+      return div;
+    };
+    legend.addTo(map);
+
+    // call once to populate legend with drawn counts (0)
+    updateLegend();
+
+    // WMS opacity control removed per user request
+
+    // =========================
+    // DRAWN LAYER OPACITY CONTROL
+    // =========================
+    // control to adjust opacity of user-drawn polygons
+    let drawnOpacity = 0.55; // default matches Custom polygon style
+    const drawnOpacityControl = L.control({ position: 'topright' });
+
+    drawnOpacityControl.onAdd = function () {
+      const div = L.DomUtil.create('div', 'info');
+      div.innerHTML = `
+        <div><strong>Drawings opacity</strong><br/>
+        <input id="drawOpacity" type="range" min="0" max="1" step="0.05" value="${drawnOpacity}" style="width:120px"></div>
+      `;
+      L.DomEvent.disableClickPropagation(div);
+      return div;
+    };
+
+    function setDrawnOpacity(val) {
+      drawnOpacity = val;
+      drawnItems.eachLayer(function (layer) {
+        if (layer.setStyle) {
+          try {
+            // update cached original style so deselect restores to user's chosen opacity
+            layer._originalStyle = layer._originalStyle || {};
+            layer._originalStyle.fillOpacity = val;
+            layer.setStyle({ fillOpacity: val });
+          } catch (err) { /* noop */ }
+        }
+      });
+    }
+
+    // show control only when "User drawings" overlay is visible
+    map.on('overlayadd', function (e) {
+      if (e.layer === drawnItems) {
+        drawnOpacityControl.addTo(map);
+        // attach input listener after control added
+        const slider = document.getElementById('drawOpacity');
+        if (slider) {
+          slider.value = drawnOpacity;
+          slider.addEventListener('input', function (ev) {
+            setDrawnOpacity(parseFloat(ev.target.value));
+          });
+        }
+      }
+    });
+
+    map.on('overlayremove', function (e) {
+      if (e.layer === drawnItems) {
+        try { drawnOpacityControl.remove(); } catch (err) { /* noop */ }
+      }
+    });
+
+    // if drawnItems is visible on load, add control and wire slider
+    if (map.hasLayer(drawnItems)) {
+      drawnOpacityControl.addTo(map);
+      // small timeout to ensure control DOM exists
+      setTimeout(function () {
+        const slider = document.getElementById('drawOpacity');
+        if (slider) {
+          slider.value = drawnOpacity;
+          slider.addEventListener('input', function (ev) {
+            setDrawnOpacity(parseFloat(ev.target.value));
+          });
+        }
+      }, 0);
+    }
+
+    // helper functions referenced by popup buttons
+    window.regionZoom = function (layerId) {
+      const ly = map._layers && map._layers[layerId];
+      if (ly && ly.getBounds) map.fitBounds(ly.getBounds());
+    };
+
+    window.regionSelect = function (layerId) {
+      const ly = map._layers && map._layers[layerId];
+      if (!ly) return;
+      // perform single-select: clear others and select this one
+      clearAllSelections();
+      selectLayer(ly);
+      try { ly.openPopup && ly.openPopup(); } catch (err) {}
+    };
+
+    // Note: selection is now multi-select. Map click clears all selections (handled elsewhere).
+
+    // SEARCH: search by shapeName first, then fall back to other name keys
+    const searchHighlights = [];
+
+    function performSearch() {
+      const q = (document.getElementById('searchInput').value || '').trim().toLowerCase();
+      if (!q) return;
+      // clear previous highlights
+      clearSearch();
+
+      let firstFound = null;
+
+      // helper to test a feature's name-like properties, preferring shapeName
+      function matchesFeature(feat) {
+        const p = (feat && feat.properties) || {};
+        const tests = [];
+        if (p.shapeName) tests.push(String(p.shapeName).toLowerCase());
+        // also include other name-like keys
+        for (const k of Array.isArray(nameKeys) ? nameKeys : ['name']) {
+          if (p[k]) tests.push(String(p[k]).toLowerCase());
+        }
+        // also include generic name fields
+        if (p.NAME) tests.push(String(p.NAME).toLowerCase());
+        if (p.name) tests.push(String(p.name).toLowerCase());
+
+        for (const t of tests) {
+          if (!t) continue;
+          if (t.indexOf(q) !== -1) return true;
+        }
+        return false;
+      }
+
+      // collect results (object with layer ref and display name)
+      const results = [];
+      // search stored ADM geo layers (admGeo) and user-drawn features so search
+      // works even when layer groups are not active on the map
+      const sources = [].concat(admGeo || [], [drawnItems]);
+      sources.forEach(function (group) {
+        try {
+          // admGeo entries are L.GeoJSON instances (may contain sub-layers)
+          group.eachLayer(function (ly) {
+            if (!ly) return;
+            if (ly.feature && ly.feature.properties) {
+              if (matchesFeature(ly.feature)) {
+                try {
+                  // push structured result
+                  const display = (ly.feature.properties && (ly.feature.properties.shapeName || ly.feature.properties.name)) || 'Feature';
+                  results.push({ layer: ly, name: display });
+                  applySelectedStyle(ly); searchHighlights.push(ly);
+                  if (!firstFound) { firstFound = ly; try { ly.openPopup && ly.openPopup(); if (ly.getBounds) map.fitBounds(ly.getBounds()); } catch (err){} }
+                } catch (err){}
+              }
+            } else if (ly.eachLayer) {
+              ly.eachLayer(function (sub) {
+                if (sub && sub.feature && sub.feature.properties) {
+                  if (matchesFeature(sub.feature)) {
+                    try {
+                      const display = (sub.feature.properties && (sub.feature.properties.shapeName || sub.feature.properties.name)) || 'Feature';
+                      results.push({ layer: sub, name: display });
+                      applySelectedStyle(sub); searchHighlights.push(sub);
+                      if (!firstFound) { firstFound = sub; try { sub.openPopup && sub.openPopup(); if (sub.getBounds) map.fitBounds(sub.getBounds()); } catch (err){} }
+                    } catch (err){}
+                  }
+                }
+              });
+            }
+          });
+        } catch (err) { /* noop */ }
+      });
+
+      // populate the result list UI (shows a short clickable list)
+      try { populateSearchResults(results, q); } catch (err) {}
+    }
+
+    function clearSearch() {
+      while (searchHighlights.length) {
+        const ly = searchHighlights.pop();
+        try { if (ly._originalStyle) { ly.setStyle(ly._originalStyle); } else { applyDefaultStyle(ly); } } catch (e) {}
+      }
+      try { if (singleFeatureLayer) { map.removeLayer(singleFeatureLayer); singleFeatureLayer = null; } } catch (e) {}
+    }
+
+    function populateSearchResults(results) {
+      const container = document.getElementById('searchResults');
+      if (!container) return;
+      container.innerHTML = '';
+      if (!results || !results.length) {
+        const none = document.createElement('div'); none.className = 'search-result'; none.textContent = 'No results'; none.style.color = '#666'; container.appendChild(none); return;
+      }
+      results.slice(0, 20).forEach(function (r, idx) {
+        const div = document.createElement('div');
+        div.tabIndex = 0;
+        div.className = 'search-result';
+        div.textContent = r.name || ('Result ' + (idx+1));
+        div.addEventListener('click', function () {
+          try {
+            // clear previous highlights/selections
+            clearAllSelections();
+            // remove any previous single-feature temporary layer
+            try { if (singleFeatureLayer) { map.removeLayer(singleFeatureLayer); singleFeatureLayer = null; } } catch (e) {}
+
+            // determine the feature object to display
+            const chosenLayer = r.layer;
+            let feat = null;
+            if (chosenLayer && chosenLayer.feature) feat = chosenLayer.feature;
+            // if layer is a group, attempt to find sub-feature (not common here)
+            if (!feat && chosenLayer && chosenLayer.eachLayer) {
+              chosenLayer.eachLayer(function (sub) { if (!feat && sub.feature) feat = sub.feature; });
+            }
+
+            if (feat) {
+              // hide overlay layer groups while showing only the selected shape
+              try {
+                // remove adm layer groups and drawnItems from map so only temporary is visible
+                [adm0Layer, adm1Layer, adm2Layer, drawnItems].forEach(function (lg) { try { if (map.hasLayer(lg)) map.removeLayer(lg); } catch (e) {} });
+              } catch (e) {}
+
+              // create a temporary geoJSON layer for just this feature
+              try {
+                singleFeatureLayer = L.geoJSON(feat, { style: function(f){ return styleFeature(f) || {}; }, onEachFeature: onEachFeature });
+                singleFeatureLayer.addTo(map);
+                // select it visually
+                singleFeatureLayer.eachLayer(function (l) { try { selectLayer(l); l.openPopup && l.openPopup(); if (l.getBounds) map.fitBounds(l.getBounds()); else if (l.getLatLng) map.setView(l.getLatLng(), 14); } catch (e) {} });
+              } catch (e) {}
+            } else if (chosenLayer) {
+              // fallback: just select the layer reference
+              try { selectLayer(chosenLayer); chosenLayer.openPopup && chosenLayer.openPopup(); if (chosenLayer.getBounds) map.fitBounds(chosenLayer.getBounds()); } catch (e) {}
+            }
+          } catch (err) {}
+        });
+        container.appendChild(div);
+      });
+    }
+
+    // Export (save) drawn features manually. Prompts the user with a Save dialog and downloads if needed.
+    async function exportDrawnGeoJSON(filename = 'Custom_Drawings.geojson') {
+      const fc = { type: 'FeatureCollection', features: [] };
+      drawnItems.eachLayer(function (ly) {
+        try { if (ly.toGeoJSON) fc.features.push(ly.toGeoJSON()); } catch (err) { /* noop */ }
+      });
+      if (!fc.features.length) { alert('No drawn features to export'); return; }
+      const text = JSON.stringify(fc, null, 2);
+      try {
+        if (window.showSaveFilePicker) {
+          const opts = { suggestedName: filename, types: [{ description: 'GeoJSON', accept: { 'application/geo+json': ['.geojson'], 'application/json': ['.json'] } }] };
+          const handle = await window.showSaveFilePicker(opts);
+          const writable = await handle.createWritable();
+          await writable.write(text);
+          await writable.close();
+          return;
+        }
+      } catch (err) { console.warn('Save via File System Access failed', err); }
+      // fallback to download
+      const blob = new Blob([text], { type: 'application/geo+json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+
+    // Import a GeoJSON file, add features to drawnItems
+    async function importGeoJSONPicker() {
+      try {
+        if (window.showOpenFilePicker) {
+          const [handle] = await window.showOpenFilePicker({ multiple: false, types: [{ description: 'GeoJSON', accept: { 'application/geo+json': ['.geojson'], 'application/json': ['.json'] } }] });
+          if (!handle) return;
+          const file = await handle.getFile();
+          const text = await file.text();
+          importGeoJSONText(text);
+          return;
+        }
+      } catch (err) { console.warn('Open file picker failed', err); }
+      const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.geojson,application/json,application/geo+json';
+      inp.onchange = function (ev) { const f = ev.target.files && ev.target.files[0]; if (!f) return; const reader = new FileReader(); reader.onload = function (e) { importGeoJSONText(e.target.result); }; reader.readAsText(f); };
+      inp.click();
+    }
+
+    function importGeoJSONText(text) {
+      try {
+        const obj = JSON.parse(text);
+        const geo = L.geoJSON(obj, {
+          onEachFeature: function (feature, layer) {
+            attachPropsToLayer(layer, feature.properties || {});
+            drawnItems.addLayer(layer);
+          }
+        });
+        if (geo && geo.getBounds) try { map.fitBounds(geo.getBounds()); } catch (e) {}
+        updateLegend();
+        populateFeatureList();
+      } catch (err) { alert('Failed to import GeoJSON: ' + err.message); }
+    }
+
+    // populate feature list sidebar from loaded GeoJSON layers
+    function populateFeatureList() {
+      const list = document.getElementById('featureList'); if (!list) return; list.innerHTML = '';
+      const addFeatureItem = function(featLayer, name){
+        const li = document.createElement('li'); li.textContent = name || 'Feature';
+        li.onclick = function(){ try { if (featLayer.getBounds) map.fitBounds(featLayer.getBounds()); else if (featLayer.getLatLng) map.setView(featLayer.getLatLng(), 14); try { featLayer.openPopup && featLayer.openPopup(); } catch(e){} } catch(err){} };
+        list.appendChild(li);
+      };
+
+      // ADM layers (ADM0/ADM1/ADM2)
+      try {
+        [[adm0Layer, 'ADM0'], [adm1Layer, 'ADM1'], [adm2Layer, 'ADM2']].forEach(function(pair){
+          const layerGroup = pair[0];
+          const label = pair[1];
+          layerGroup.eachLayer(function (ly) {
+            if (ly && ly.feature && ly.feature.properties) addFeatureItem(ly, ly.feature.properties.name || ly.feature.properties.NAME || label);
+            else if (ly && ly.eachLayer) ly.eachLayer(function(s){ if (s && s.feature && s.feature.properties) addFeatureItem(s, s.feature.properties.name || s.feature.properties.NAME || (label + ' sub')); });
+          });
+        });
+      } catch (err) {}
+
+      // user-drawn features
+      try {
+        drawnItems.eachLayer(function (ly) { if (ly && ly.feature && ly.feature.properties) addFeatureItem(ly, ly.feature.properties.name || ly.feature.properties.type || 'User feature'); });
+      } catch (err) {}
+    }
+
+    // call populateFeatureList after data loads; we already populate after fetches in the loader code below
+
+  </script>
+</body>
+</html>
